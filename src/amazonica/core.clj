@@ -151,21 +151,35 @@
 
 (declare new-instance)
 
+(defn use-accelerate-mode
+  [client region]
+  ((.setRegion client (Region/getRegion (Regions/fromName region)))
+   (.setS3ClientOptions client (..
+                                (S3ClientOptions/builder)
+                                (setAccelerateModeEnabled true)
+                                (build)))))
+
 (defn- create-client
   [clazz credentials configuration]
   (if (every? nil? [credentials configuration])
     (new-instance (Class/forName clazz))
     ; TransferManager is the only client to date that doesn't accept AWSCredentialsProviders
     (if (= (.getSimpleName clazz) "TransferManager")
-        (invoke-constructor
-          "com.amazonaws.services.s3.transfer.TransferManager"
-          [(create-client (Class/forName "com.amazonaws.services.s3.AmazonS3Client")
-                          credentials
-                          configuration)])
-        (invoke-constructor (.getName clazz)
-                            (->> [credentials configuration]
-                                 (filter (comp not nil?))
-                                 vec)))))
+      (invoke-constructor
+       "com.amazonaws.services.s3.transfer.TransferManager"
+       [(create-client (Class/forName "com.amazonaws.services.s3.AmazonS3Client")
+                       credentials
+                       configuration)])
+      (let [client (invoke-constructor (.getName clazz)
+                                       (->> [credentials configuration]
+                                            (filter (comp not nil?))
+                                            vec))]
+        (when (= "AmazonS3Client" (.getSimpleName clazz))
+          (when (:accelerate-mode-enabled credentials)
+            (use-accelerate-mode client (:endpoint credentials))))
+        client))))
+
+
 
 (defn get-credentials
   [credentials]
