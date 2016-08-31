@@ -154,11 +154,11 @@
 
 (defn use-accelerate-mode
   [client region]
-  ((.setRegion client (Region/getRegion (Regions/fromName region)))
-   (.setS3ClientOptions client (..
-                                (S3ClientOptions/builder)
-                                (setAccelerateModeEnabled true)
-                                (build)))))
+  (.setRegion client (Region/getRegion (Regions/fromName region)))
+  (.setS3ClientOptions client (..
+                               (S3ClientOptions/builder)
+                               (setAccelerateModeEnabled true)
+                               (build))))
 
 (defn- create-client
   [clazz credentials configuration]
@@ -176,8 +176,7 @@
                                             (filter (comp not nil?))
                                             vec))]
         (when (= "AmazonS3Client" (.getSimpleName clazz))
-          (when (:accelerate-mode-enabled credentials)
-            (use-accelerate-mode client (:endpoint credentials))))
+          (use-accelerate-mode client "eu-central-1"))
         client))))
 
 
