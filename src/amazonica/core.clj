@@ -6,6 +6,7 @@
            [com.amazonaws
              AmazonServiceException
              ClientConfiguration]
+           com.amazonaws.services.s3.S3ClientOptions
            [com.amazonaws.auth
              AWSCredentials
              AWSCredentialsProvider
