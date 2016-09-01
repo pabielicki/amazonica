@@ -7,6 +7,10 @@
              AmazonServiceException
              ClientConfiguration]
            com.amazonaws.services.s3.S3ClientOptions
+           [com.amazonaws.services.s3.model
+            BucketAccelerateConfiguration
+            BucketAccelerateStatus
+            GetBucketAccelerateConfigurationRequest]
            [com.amazonaws.auth
              AWSCredentials
              AWSCredentialsProvider
@@ -152,34 +156,21 @@
 
 (declare new-instance)
 
-(defn use-accelerate-mode
-  [client region]
-  (.setRegion client (Region/getRegion (Regions/fromName region)))
-  (.setS3ClientOptions client (..
-                               (S3ClientOptions/builder)
-                               (setAccelerateModeEnabled true)
-                               (build))))
-
 (defn- create-client
   [clazz credentials configuration]
   (if (every? nil? [credentials configuration])
     (new-instance (Class/forName clazz))
-    ; TransferManager is the only client to date that doesn't accept AWSCredentialsProviders
+                                        ; TransferManager is the only client to date that doesn't accept AWSCredentialsProviders
     (if (= (.getSimpleName clazz) "TransferManager")
       (invoke-constructor
        "com.amazonaws.services.s3.transfer.TransferManager"
        [(create-client (Class/forName "com.amazonaws.services.s3.AmazonS3Client")
                        credentials
                        configuration)])
-      (let [client (invoke-constructor (.getName clazz)
-                                       (->> [credentials configuration]
-                                            (filter (comp not nil?))
-                                            vec))]
-        (when (= "AmazonS3Client" (.getSimpleName clazz))
-          (use-accelerate-mode client "eu-central-1"))
-        client))))
-
-
+      (invoke-constructor (.getName clazz)
+                          (->> [credentials configuration]
+                               (filter (comp not nil?))
+                               vec)))))
 
 (defn get-credentials
   [credentials]
@@ -269,12 +260,30 @@
     (set-endpoint! client credentials)
     client))
 
+(defn is-accelerate-mode-enabled?
+  [client bucket-name]
+  (let [status (.getStatus
+                (.getBucketAccelerateConfiguration
+                 client
+                 (GetBucketAccelerateConfigurationRequest. bucket-name)))]
+    (= status "Enabled")))
+
+(defn setup-accelerate-mode
+  [client credentials]
+  (when (is-accelerate-mode-enabled? client (:bucket-name credentials))
+    (.setRegion client (Region/getRegion (Regions/fromName (:endpoint credentials))))
+    (.setS3ClientOptions client (..
+                                 (S3ClientOptions/builder)
+                                 (setAccelerateModeEnabled true)
+                                 (build)))))
+
 (defn- amazon-client*
   [clazz credentials configuration]
   (let [aws-creds  (get-credentials credentials)
         aws-config (get-client-configuration configuration)
         client     (create-client clazz aws-creds aws-config)]
     (set-endpoint! client credentials)
+    (setup-accelerate-mode client credentials)
     client))
 
 (def ^:private encryption-client
