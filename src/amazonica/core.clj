@@ -7,10 +7,6 @@
              AmazonServiceException
              ClientConfiguration]
            com.amazonaws.services.s3.S3ClientOptions
-           [com.amazonaws.services.s3.model
-            BucketAccelerateConfiguration
-            BucketAccelerateStatus
-            GetBucketAccelerateConfigurationRequest]
            [com.amazonaws.auth
              AWSCredentials
              AWSCredentialsProvider
@@ -260,22 +256,13 @@
     (set-endpoint! client credentials)
     client))
 
-(defn is-accelerate-mode-enabled?
-  [client bucket-name]
-  (let [status (.getStatus
-                (.getBucketAccelerateConfiguration
-                 client
-                 (GetBucketAccelerateConfigurationRequest. bucket-name)))]
-    (= status "Enabled")))
-
 (defn setup-accelerate-mode
   [client credentials]
-  (when (is-accelerate-mode-enabled? client (:bucket-name credentials))
-    (.setRegion client (Region/getRegion (Regions/fromName (:endpoint credentials))))
-    (.setS3ClientOptions client (..
-                                 (S3ClientOptions/builder)
-                                 (setAccelerateModeEnabled true)
-                                 (build)))))
+  (.setRegion client (Region/getRegion (Regions/fromName (:endpoint credentials))))
+  (.setS3ClientOptions client (..
+                               (S3ClientOptions/builder)
+                               (setAccelerateModeEnabled true)
+                               (build))))
 
 (defn- amazon-client*
   [clazz credentials configuration]
@@ -283,7 +270,8 @@
         aws-config (get-client-configuration configuration)
         client     (create-client clazz aws-creds aws-config)]
     (set-endpoint! client credentials)
-    (setup-accelerate-mode client credentials)
+    (when (:accelerate-mode-enabled configuration)
+      (setup-accelerate-mode client credentials))
     client))
 
 (def ^:private encryption-client
