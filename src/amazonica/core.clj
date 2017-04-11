@@ -216,7 +216,9 @@
                (.setRegion client))
           (catch NoSuchMethodException e
             (println e)))
-        (.setEndpoint client endpoint))))
+        (do
+          (.setRegion client (Region/getRegion Regions/US_EAST_1))
+          (.setEndpoint client endpoint)))))
 
 (defn encryption-client*
   [encryption credentials configuration]
@@ -248,9 +250,8 @@
   [client credentials]
   (.setRegion client (Region/getRegion (Regions/fromName (:endpoint credentials))))
   (.setS3ClientOptions client (..
-                               (S3ClientOptions/builder)
-                               (setAccelerateModeEnabled true)
-                               (build))))
+                               (S3ClientOptions.)
+                               (setAccelerateModeEnabled true))))
 
 ;; (swap! client-config assoc :encryption-client-fn (memoize encryption-client*))
 
