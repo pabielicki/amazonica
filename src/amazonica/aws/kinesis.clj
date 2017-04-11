@@ -20,12 +20,13 @@
               KinesisClientLibDependencyException
               ShutdownException
               ThrottlingException]
-           [com.amazonaws.services.kinesis.clientlibrary.types
-            ShutdownReason]
            [com.amazonaws.services.kinesis.clientlibrary.lib.worker
               InitialPositionInStream
               KinesisClientLibConfiguration
-              Worker]
+              Worker
+              ShutdownReason]
+           [com.amazonaws.services.kinesis.metrics.interfaces
+            MetricsLevel]
            java.nio.ByteBuffer
            java.util.UUID))
 
@@ -142,7 +143,9 @@
            stream
            worker-id
            endpoint
+           dynamodb-endpoint
            initial-position-in-stream
+           ^java.util.Date initial-position-in-stream-date
            failover-time-millis
            shard-sync-interval-millis
            max-records
@@ -156,6 +159,7 @@
            cloud-watch-client-config
            user-agent
            task-backoff-time-millis
+           metrics-level
            metrics-buffer-time-millis
            metrics-max-queue-size
            validate-sequence-number-before-checkpointing
@@ -172,9 +176,16 @@
           endpoint
           (.withKinesisEndpoint endpoint)
 
+          dynamodb-endpoint
+          (.withDynamoDBEndpoint dynamodb-endpoint)
+
           initial-position-in-stream
           (.withInitialPositionInStream
            (InitialPositionInStream/valueOf (name initial-position-in-stream)))
+
+          initial-position-in-stream-date
+          (.withTimestampAtInitialPositionInStream
+           initial-position-in-stream-date)
 
           failover-time-millis
           (.withFailoverTimeMillis failover-time-millis)
@@ -217,6 +228,9 @@
 
           task-backoff-time-millis
           (.withTaskBackoffTimeMillis task-backoff-time-millis)
+
+          metrics-level
+          (.withMetricsLevel (MetricsLevel/valueOf (name metrics-level)))
 
           metrics-buffer-time-millis
           (.withMetricsBufferTimeMillis metrics-buffer-time-millis)

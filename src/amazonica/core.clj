@@ -97,18 +97,6 @@
    :message      (.getMessage e)
    :stack-trace  (stack->string e)})
 
-; Java methods on the AWS*Client class which won't be exposed
-(def ^:private excluded
-  #{:anonymous-invoke
-    :do-invoke
-    :invoke
-    :init    
-    :set-endpoint
-    :get-cached-response-metadata
-    :get-service-abbreviation})
-    ; addRequestHandler???
-
-
 (defn keys->cred
   [access-key secret-key & [endpoint]]
   (let [credential {:access-key access-key
@@ -230,7 +218,7 @@
             (println e)))
         (.setEndpoint client endpoint))))
 
-(defn- encryption-client*
+(defn encryption-client*
   [encryption credentials configuration]
   (let [creds     (get-credentials credentials)
         config    (get-client-configuration configuration)
@@ -264,7 +252,9 @@
                                (setAccelerateModeEnabled true)
                                (build))))
 
-(defn- amazon-client*
+;; (swap! client-config assoc :encryption-client-fn (memoize encryption-client*))
+
+(defn amazon-client*
   [clazz credentials configuration]
   (let [aws-creds  (get-credentials credentials)
         aws-config (get-client-configuration configuration)
@@ -274,21 +264,30 @@
       (setup-accelerate-mode client credentials))
     client))
 
-(def ^:private encryption-client
-  (memoize encryption-client*))
+(swap! client-config assoc :amazon-client-fn (memoize amazon-client*))
 
-(def ^:private amazon-client
-  (memoize amazon-client*))
+(defn- keyword-converter
+  "Given something that tokenizes a string into parts, turn it into
+  a :kebab-case-keyword."
+  [separator-regex]
+  (fn [s]
+    (->> (str/split s separator-regex)
+         (map str/lower-case)
+         (interpose \-)
+         str/join
+         keyword)))
 
-
-(defn- camel->keyword
+(def ^:private camel->keyword
   "from Emerick, Grande, Carper 2012 p.70"
-  [s]
-  (->> (str/split s #"(?<=[a-z])(?=[A-Z])")
-       (map str/lower-case)
-       (interpose \-)
-       str/join
-       keyword))
+  (keyword-converter #"(?<=[a-z])(?=[A-Z])"))
+
+(def ^:private camel->keyword2
+  "Like [[camel->keyword]], but smarter about acronyms and concepts like iSCSI
+  and OpenID which should be treated as a single concept."
+  (comp
+   (keyword-converter #"(?<!(^|[A-Z]))(?=[A-Z])|(?<!^)(?=[A-Z][a-z])")
+   #(str/replace % #"(?i)iscsi" "ISCSI")
+   #(str/replace % #"(?i)openid" "OPENID")))
 
 (defn- keyword->camel
   [kw]
@@ -298,13 +297,11 @@
          (fmap str/capitalize)
          str/join)))
 
-
 (defn- aws-package?
   [clazz]
   (->> (.getName clazz)
        (re-find #"com\.amazonaws\.services")
-       nil?
-       not))
+       some?))
 
 (defn to-date
   [date]
@@ -336,7 +333,7 @@
         (.invoke type (make-array Object 0)))))
 
 ; assoc java Class to Clojure cast functions
-(defonce ^:private coercions 
+(defonce ^:private coercions
   (->> [:String :Integer :Long :Double :Float]
        (reduce
          (fn [m e]
@@ -372,7 +369,7 @@
 
 (defn coerce-value
   "Coerces the supplied stringvalue to the required type as
-  defined by the AWS method signature. String or keyword 
+  defined by the AWS method signature. String or keyword
   conversion to Enum types (e.g. via valueOf()) is supported."
   [value type]
   (let [value (if (keyword? value) (name value) value)]
@@ -481,20 +478,29 @@
    in the DynamoDBV2Client.
    http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/dynamodbv2/model/DeleteItemRequest.html#setKey(java.util.Map.Entry, java.util.Map.Entry)
    http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/dynamodbv2/model/GetItemRequest.html#setKey(java.util.Map.Entry, java.util.Map.Entry)"
-  [method name getter?]
+  [method name value]
   (let [args (.getParameterTypes method)]
     (and (= name (normalized-name (.getName method)))
-         (case getter?
-           true  (= 0 (count args))
-           false (and (< 0 (count args))
-                      (not (and (= 2 (count args))
-                                (every? (partial = java.util.Map$Entry)
-                                        args))))))))
+         (if (empty? value)
+             (= 0 (count args))
+             (and (< 0 (count args))
+                  (or (= (count args) (count (flatten value)))
+                      (and (coll? value)
+                           (= 1 (count args))
+                           (or (contains? @coercions (first args))
+                               (.isArray (first args))
+                               (and (.getPackage (first args))
+                                    (.startsWith
+                                      (.getName (.getPackage (first args)))
+                                      "java.util")))))
+                  (not (and (= 2 (count args))
+                            (every? (partial = java.util.Map$Entry)
+                                    args))))))))
 
 (defn- accessor-methods
-  [class-methods name getter?]
+  [class-methods name value]
   (reduce
-    #(if (matches? %2 name getter?)
+    #(if (matches? %2 name value)
       (conj %1 %2)
       %1)
     []
@@ -506,7 +512,7 @@
       (.getMethods)
       (accessor-methods
         (.toLowerCase (keyword->camel k))
-        (empty? v))))
+        v)))
 
 (defn to-java-coll
   "Need this only because S3 methods actually try to
@@ -627,9 +633,10 @@
    Amazon*Client class. (Note that we assume all AWS
    service calls take at most a single argument.)"
   [method args]
-  (-> (.getParameterTypes method)
-      first
-      (create-bean args)))
+  (let [clazz (first (.getParameterTypes method))]
+    (if (contains? @coercions clazz)
+        (coerce-value (into {} args) clazz)
+        (create-bean clazz args))))
 
 
 (defprotocol IMarshall
@@ -689,7 +696,7 @@
 (extend-protocol IMarshall
   nil
   (marshall [obj] nil)
-  
+
   java.util.Map
   (marshall [obj]
     (if-not (empty? obj)
@@ -699,21 +706,21 @@
                 (apply vector (keys obj)))
           (fmap marshall
                 (apply vector (vals obj)))))))
-  
+
   java.util.Collection
   (marshall [obj]
     (if (instance? clojure.lang.IPersistentSet obj)
       obj
       (fmap marshall (apply vector obj))))
-  
+
   java.util.Date
   (marshall [obj] (DateTime. (.getTime obj)))
-  
+
   ; `false` boolean objects (i.e. (Boolean. false)) come out of e.g.
   ; .doesBucketExist, which wreak havoc on Clojure truthiness
   Boolean
   (marshall [obj] (when-not (nil? obj) (.booleanValue obj)))
-  
+
   Object
   (marshall [obj]
     (if (aws-package? (class obj))
@@ -798,20 +805,19 @@
                (if (seq m) m {}))}
       :default {:args args})))
 
-(declare candidate-client)
-
-(defn- transfer-manager*
+(defn transfer-manager*
   [credential client-config crypto]
-  (invoke-constructor
-    "com.amazonaws.services.s3.transfer.TransferManager"
-    (if crypto
+  (let [encryption-client (:encryption-client-fn client-config)
+        amazon-client (:amazon-client-fn client-config)]
+    (invoke-constructor
+      "com.amazonaws.services.s3.transfer.TransferManager"
+      (if crypto
         [(encryption-client crypto credential client-config)]
         [(amazon-client (Class/forName "com.amazonaws.services.s3.AmazonS3Client")
                         credential
-                        client-config)])))
+                        client-config)]))))
 
-(def ^:private transfer-manager
-  (memoize transfer-manager*))
+(swap! client-config assoc :transfer-manager-fn (memoize transfer-manager*))
 
 (defn candidate-client
   [clazz args]
@@ -821,6 +827,9 @@
                              (or cred-bound @credential))
         config-bound (or *client-config* (:client-config args))
         client-config (merge @client-config config-bound)
+        encryption-client (:encryption-client-fn client-config)
+        amazon-client (:amazon-client-fn client-config)
+        transfer-manager (:transfer-manager-fn client-config)
         crypto (if (even? (count (:args args)))
                    (:encryption (apply hash-map (:args args))))
         client  (if (and crypto (or (= (.getSimpleName clazz) "AmazonS3Client")
@@ -830,7 +839,7 @@
         (if (= (.getSimpleName clazz) "TransferManager")
             (transfer-manager credential client-config crypto)
             @client)))
-        
+
 
 (defn- fn-call
   "Returns a function that reflectively invokes method on
@@ -899,8 +908,7 @@
   "Finds the appropriate method to invoke in cases where
   the Amazon*Client has overloaded methods by arity or type."
   [methods & arg]
-  (let [args (:args (args-from arg))
-        methods (filter #(not (Modifier/isPrivate (.getModifiers %))) methods)]
+  (let [args (:args (args-from arg))]
     (or (some (partial types-match-args args) methods)
         (choose-from (possible-methods methods args)))))
 
@@ -909,7 +917,9 @@
    derived from the java.lang.reflect.Method(s). Overloaded
    methods will yield a variadic Clojure function."
   [client ns fname methods]
-  (intern ns (symbol (name fname))
+  (intern ns (with-meta (symbol (name fname))
+               {:amazonica/client client
+                :amazonica/methods methods})
     (fn [& args]
       (if-let [method (best-method methods args)]
         (if-not args
@@ -920,23 +930,18 @@
                          (name fname) args)))))))
 
 (defn- client-methods
-  "Returns a map with keys of idiomatic Clojure hyphenated
-   keywords corresponding to the public Java method names of
-   the class argument, vals are vectors of
-   java.lang.reflect.Methods."
+  "Returns a map with keys of idiomatic Clojure hyphenated keywords
+  corresponding to the public Java method names of the class argument, vals are
+  vectors of java.lang.reflect.Methods."
   [client]
-  (reduce
-    (fn [col method]
-      (let [fname (camel->keyword (.getName method))]
-        (if (and (contains? excluded fname)
-                 (not= (.getSimpleName client) "AWSLambdaClient")
-                 (not= (.getSimpleName client) "AmazonCloudSearchDomainClient"))
-            col
-            (if (contains? col fname)
-                (update-in col [fname] conj method)
-                (assoc col fname [method])))))
-    {}
-    (.getDeclaredMethods client)))
+  (->> (.getDeclaredMethods client)
+       (remove (fn [method]
+                 (let [mods (.getModifiers method)]
+                   (or (.isSynthetic method)
+                       (Modifier/isPrivate mods)
+                       (Modifier/isProtected mods)
+                       (Modifier/isStatic mods)))))
+       (group-by #(camel->keyword (.getName %)))))
 
 (defn- show-functions [ns]
   (intern ns (symbol "show-functions")
@@ -950,5 +955,10 @@
    from the Amazon*Client class as Clojure functions."
   [client ns]
   (show-functions ns)
-  (doseq [[k v] (client-methods client)]
-    (intern-function client ns k v)))
+  (intern ns 'client-class client)
+  (doseq [[fname methods] (client-methods client)
+          :let [the-var (intern-function client ns fname methods)
+                fname2 (-> methods first .getName camel->keyword2)]]
+    (when (not= fname fname2)
+      (let [the-var2 (intern-function client ns fname2 methods)]
+        (alter-meta! the-var assoc :amazonica/deprecated-in-favor-of the-var2)))))
